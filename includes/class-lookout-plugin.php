@@ -338,6 +338,22 @@ final class Lookout_Plugin
             error_log('Lookout: failed to report exception: '.$reportingError->getMessage());
         }
 
+        // With WP_DEBUG on (see Lookout_Debug_Page::enabled), show the rich local
+        // debug page instead of PHP's bare fatal output. The request is dying
+        // either way; the page is strictly more useful and leaks less than a raw
+        // trace echoed by the default handler.
+        try {
+            if (class_exists('Lookout_Debug_Page') && Lookout_Debug_Page::enabled() && ! headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: text/html; charset=UTF-8');
+                echo Lookout_Debug_Page::render($e, class_exists('Lookout_Breadcrumbs') ? Lookout_Breadcrumbs::all() : []);
+                error_log('Lookout: uncaught '.get_class($e).': '.$e->getMessage());
+                exit(1);
+            }
+        } catch (Throwable $renderError) {
+            error_log('Lookout: debug page failed: '.$renderError->getMessage());
+        }
+
         if ($this->previous_exception_handler !== null) {
             ($this->previous_exception_handler)($e);
 

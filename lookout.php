@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Lookout
  * Description: Send errors, fatals, 404s, performance traces, CPU profiles, PHP logs, cron check-ins, and browser RUM to Lookout.
- * Version: 0.7.0
+ * Version: 0.8.0
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author: Lookout
@@ -17,7 +17,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('LOOKOUT_VERSION', '0.7.0');
+define('LOOKOUT_VERSION', '0.8.0');
 define('LOOKOUT_PLUGIN_FILE', __FILE__);
 define('LOOKOUT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
@@ -33,6 +33,7 @@ require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-logger.php';
 require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-mail.php';
 require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-auth.php';
 require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-metrics.php';
+require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-debug-page.php';
 require_once LOOKOUT_PLUGIN_DIR.'includes/class-lookout-plugin.php';
 
 // Golden rule: monitoring must never break the host site. Each subsystem boots in isolation so a
