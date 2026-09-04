@@ -89,6 +89,7 @@ final class Lookout_Plugin
                 'route' => $path,
                 'url' => $url,
                 'environment' => (string) get_option('lookout_environment', 'production'),
+                ...(self::release() !== '' ? ['release' => self::release()] : []),
                 'context' => array_merge($this->base_context(), [
                     'http' => [
                         'method' => $method,
@@ -118,6 +119,22 @@ final class Lookout_Plugin
         $base = (string) get_option('lookout_base_url', '');
 
         return $api_key !== '' && $base !== '';
+    }
+
+    /**
+     * Release identifier attached to error payloads. Prefers a LOOKOUT_RELEASE constant
+     * defined in wp-config.php (set by deploy tooling) over the lookout_release option.
+     * Never falls back to LOOKOUT_VERSION - that is the plugin's own version, not the
+     * site's release, and would pin every WP site to a single release value, defeating
+     * the distinct-release regression signal server-side.
+     */
+    public static function release(): string
+    {
+        if (defined('LOOKOUT_RELEASE') && is_string(LOOKOUT_RELEASE) && trim(LOOKOUT_RELEASE) !== '') {
+            return trim(LOOKOUT_RELEASE);
+        }
+
+        return trim((string) get_option('lookout_release', ''));
     }
 
     public function register_settings_page(): void
@@ -165,6 +182,13 @@ final class Lookout_Plugin
                 return $v !== '' ? $v : 'production';
             },
             'default' => 'production',
+        ]);
+        register_setting('lookout', 'lookout_release', [
+            'type' => 'string',
+            'sanitize_callback' => function ($v): string {
+                return sanitize_text_field(is_string($v) ? $v : '');
+            },
+            'default' => '',
         ]);
         register_setting('lookout', 'lookout_report_http_404', [
             'type' => 'boolean',
@@ -248,6 +272,7 @@ final class Lookout_Plugin
             'level' => 'info',
             'language' => 'php',
             'environment' => (string) get_option('lookout_environment', 'production'),
+            ...(self::release() !== '' ? ['release' => self::release()] : []),
             'url' => home_url('/'),
             'context' => [
                 'wordpress' => true,
@@ -389,6 +414,7 @@ final class Lookout_Plugin
                 'stack_trace' => '',
                 'language' => 'php',
                 'environment' => (string) get_option('lookout_environment', 'production'),
+                ...(self::release() !== '' ? ['release' => self::release()] : []),
                 'url' => $this->current_request_url(),
                 'context' => $this->base_context(),
             ];
@@ -426,6 +452,7 @@ final class Lookout_Plugin
             'stack_frames' => self::trace_to_frames($e->getTrace()),
             'language' => 'php',
             'environment' => (string) get_option('lookout_environment', 'production'),
+            ...(self::release() !== '' ? ['release' => self::release()] : []),
             'url' => $this->current_request_url(),
             'context' => array_merge($this->base_context(), [
                 'exception_code' => $e->getCode(),

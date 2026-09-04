@@ -14,6 +14,7 @@ delete_option('lookout_enabled');
 delete_option('lookout_api_key');
 delete_option('lookout_base_url');
 delete_option('lookout_environment');
+delete_option('lookout_release');
 delete_option('lookout_report_http_404');
 delete_option('lookout_traces_enabled');
 delete_option('lookout_profiling_enabled');

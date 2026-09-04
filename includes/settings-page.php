@@ -113,6 +113,12 @@ $lookout_connected = get_option('lookout_enabled') && $lookout_base !== '' && $l
                 <input type="text" id="lookout_environment" name="lookout_environment" value="<?php echo esc_attr((string) get_option('lookout_environment', 'production')); ?>" />
                 <p class="hint"><?php esc_html_e('Tagged on each event (e.g. production, staging).', 'lookout'); ?></p>
             </div>
+
+            <div class="lookout-field">
+                <label class="lbl" for="lookout_release"><?php esc_html_e('Release', 'lookout'); ?></label>
+                <input type="text" id="lookout_release" name="lookout_release" value="<?php echo esc_attr((string) get_option('lookout_release', '')); ?>" />
+                <p class="hint"><?php esc_html_e('Deploy identifier (e.g. git SHA, version tag). Leave blank if unused - an empty value is never sent. Overridden by a LOOKOUT_RELEASE constant in wp-config.php.', 'lookout'); ?></p>
+            </div>
         </div>
 
         <div class="lookout-card">
