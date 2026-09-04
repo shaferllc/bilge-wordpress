@@ -89,7 +89,7 @@ final class Lookout_Plugin
                 'route' => $path,
                 'url' => $url,
                 'environment' => (string) get_option('lookout_environment', 'production'),
-                ...(self::release() !== '' ? ['release' => self::release()] : []),
+                'release' => self::release() !== '' ? self::release() : null,
                 'context' => array_merge($this->base_context(), [
                     'http' => [
                         'method' => $method,
@@ -272,7 +272,7 @@ final class Lookout_Plugin
             'level' => 'info',
             'language' => 'php',
             'environment' => (string) get_option('lookout_environment', 'production'),
-            ...(self::release() !== '' ? ['release' => self::release()] : []),
+            'release' => self::release() !== '' ? self::release() : null,
             'url' => home_url('/'),
             'context' => [
                 'wordpress' => true,
@@ -414,7 +414,7 @@ final class Lookout_Plugin
                 'stack_trace' => '',
                 'language' => 'php',
                 'environment' => (string) get_option('lookout_environment', 'production'),
-                ...(self::release() !== '' ? ['release' => self::release()] : []),
+                'release' => self::release() !== '' ? self::release() : null,
                 'url' => $this->current_request_url(),
                 'context' => $this->base_context(),
             ];
@@ -452,7 +452,7 @@ final class Lookout_Plugin
             'stack_frames' => self::trace_to_frames($e->getTrace()),
             'language' => 'php',
             'environment' => (string) get_option('lookout_environment', 'production'),
-            ...(self::release() !== '' ? ['release' => self::release()] : []),
+            'release' => self::release() !== '' ? self::release() : null,
             'url' => $this->current_request_url(),
             'context' => array_merge($this->base_context(), [
                 'exception_code' => $e->getCode(),
