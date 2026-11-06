@@ -1,0 +1,264 @@
+<?php
+
+/**
+ * Remote ingest config (GET /api/config) consumer.
+ *
+ * WordPress sends traces and RUM beacons non-blocking, so it cannot read a per-request
+ * 403 the way a blocking SDK does. Instead it fetches the project's canonical signal
+ * config (which signals are enabled and at what sample rate), caches it in a transient,
+ * and honors it locally. Fails open to conservative local defaults when the config
+ * cannot be fetched, but always honors a cached "disabled".
+ */
+
+declare(strict_types=1);
+
+if (! defined('ABSPATH')) {
+    exit;
+}
+
+final class Bilge_Config
+{
+    private const TRANSIENT = 'bilge_remote_config';
+
+    private const NEGATIVE_TTL = 60;
+
+    private const TTL_MIN = 60;
+
+    private const TTL_MAX = 3600;
+
+    /**
+     * Conservative local defaults used until/unless the server says otherwise.
+     * Errors and front-end JS errors ride at 100%; high-volume traces and RUM at 10%.
+     *
+     * @var array<string, array{enabled: bool, sample_rate: float}>
+     */
+    private const DEFAULTS = [
+        'errors' => ['enabled' => true, 'sample_rate' => 1.0],
+        'logs' => ['enabled' => true, 'sample_rate' => 1.0],
+        'traces' => ['enabled' => true, 'sample_rate' => 0.1],
+        'rum' => ['enabled' => true, 'sample_rate' => 0.1],
+        // Opt-in: stays off until enabled from the dashboard (sensitive auth data).
+        'auth' => ['enabled' => false, 'sample_rate' => 1.0],
+    ];
+
+    /**
+     * Resolved enable + sample rate for a signal: the server's value when known,
+     * otherwise the local default. Unknown signals default to enabled at 100%.
+     *
+     * @return array{enabled: bool, sample_rate: float}
+     */
+    public static function signal(string $type): array
+    {
+        $default = self::DEFAULTS[$type] ?? ['enabled' => true, 'sample_rate' => 1.0];
+        $remote = self::remote_signals();
+        if (! isset($remote[$type]) || ! is_array($remote[$type])) {
+            return $default;
+        }
+
+        return self::merge_signal($default, $remote[$type]);
+    }
+
+    public static function is_enabled(string $type): bool
+    {
+        return self::signal($type)['enabled'];
+    }
+
+    public static function sample_rate(string $type): float
+    {
+        return self::signal($type)['sample_rate'];
+    }
+
+    /**
+     * Head sampling decision for a signal: disabled signals never send; otherwise keep
+     * with probability equal to the sample rate.
+     */
+    public static function should_sample(string $type): bool
+    {
+        $signal = self::signal($type);
+        if (! $signal['enabled']) {
+            return false;
+        }
+
+        return self::roll($signal['sample_rate']);
+    }
+
+    /**
+     * Keep with probability $rate. Pure so it is trivially correct: 0 never keeps,
+     * >=1 always keeps, otherwise a uniform draw in [0,1). Uses core mt_rand (not the
+     * pluggable wp_rand) so it is safe to call during early plugin load.
+     */
+    public static function roll(float $rate): bool
+    {
+        if ($rate <= 0.0) {
+            return false;
+        }
+        if ($rate >= 1.0) {
+            return true;
+        }
+
+        return (mt_rand() / mt_getrandmax()) < $rate;
+    }
+
+    /**
+     * Merge a server-reported signal entry over a local default, clamping the rate.
+     *
+     * @param  array{enabled: bool, sample_rate: float}  $default
+     * @param  array<string, mixed>  $remote
+     * @return array{enabled: bool, sample_rate: float}
+     */
+    public static function merge_signal(array $default, array $remote): array
+    {
+        $enabled = array_key_exists('enabled', $remote) ? (bool) $remote['enabled'] : $default['enabled'];
+        $rate = $default['sample_rate'];
+        if (array_key_exists('sample_rate', $remote) && is_numeric($remote['sample_rate'])) {
+            $rate = max(0.0, min(1.0, (float) $remote['sample_rate']));
+        }
+
+        return ['enabled' => $enabled, 'sample_rate' => $rate];
+    }
+
+    /**
+     * Client suppression keys for errors ignored on the dashboard, as a lookup set (key => true).
+     * The error sender drops any report whose {@see self::suppression_key()} is present, so ignored
+     * errors stop re-ingesting.
+     *
+     * @return array<string, true>
+     */
+    public static function suppressed_keys(): array
+    {
+        $config = self::remote_config();
+        $raw = $config['suppress'] ?? null;
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $keys = [];
+        foreach ($raw as $key) {
+            if (is_string($key) && $key !== '') {
+                $keys[$key] = true;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Whether the dashboard has ignored this error (its suppression key is in the remote list).
+     */
+    public static function is_error_suppressed(string $exception_class, string $message): bool
+    {
+        $keys = self::suppressed_keys();
+        if ($keys === []) {
+            return false;
+        }
+
+        return isset($keys[self::suppression_key($exception_class, $message)]);
+    }
+
+    /**
+     * Stable 32-char client suppression key for an exception class + message. This recipe is a
+     * CONTRACT shared byte-for-byte with the Bilge server (App\Support\ErrorSuppressionKey) and the
+     * other SDKs — keep it identical or bump the version tag ("lkt_supp_v1") across all sides.
+     */
+    public static function suppression_key(string $exception_class, string $message): string
+    {
+        $class = mb_strtolower(trim($exception_class));
+
+        return substr(hash('sha256', 'lkt_supp_v1|'.$class.'|'.self::normalize_suppression_message($message)), 0, 32);
+    }
+
+    /**
+     * Lowercase, collapse whitespace, and mask volatile tokens (UUIDs, long id/hash runs, numbers).
+     */
+    private static function normalize_suppression_message(string $message): string
+    {
+        $s = mb_strtolower(trim($message));
+        $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
+        $s = preg_replace('/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/', '<id>', $s) ?? $s;
+        $s = preg_replace('/[0-9a-z]{12,}/', '<id>', $s) ?? $s;
+        $s = preg_replace('/\b0x[0-9a-f]+\b/', '<n>', $s) ?? $s;
+        $s = preg_replace('/\d+/', '<n>', $s) ?? $s;
+
+        return mb_substr(trim($s), 0, 200);
+    }
+
+    /**
+     * Cached per-signal config map from the server, or [] when unavailable.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private static function remote_signals(): array
+    {
+        $config = self::remote_config();
+
+        return isset($config['signals']) && is_array($config['signals']) ? $config['signals'] : [];
+    }
+
+    /**
+     * The full cached /api/config document (signals + suppress + ttl), or [] when unavailable.
+     * Fetches and caches on a miss; honors a cached "unavailable" negative result.
+     *
+     * @return array<string, mixed>
+     */
+    private static function remote_config(): array
+    {
+        $cached = get_transient(self::TRANSIENT);
+        if (is_array($cached)) {
+            return $cached;
+        }
+        if ($cached === 'unavailable') {
+            return [];
+        }
+
+        $config = self::fetch();
+        if ($config === null) {
+            set_transient(self::TRANSIENT, 'unavailable', self::NEGATIVE_TTL);
+
+            return [];
+        }
+
+        $ttl = isset($config['ttl']) && is_numeric($config['ttl'])
+            ? max(self::TTL_MIN, min(self::TTL_MAX, (int) $config['ttl']))
+            : 300;
+        set_transient(self::TRANSIENT, $config, $ttl);
+
+        return $config;
+    }
+
+    /**
+     * Fetch GET /api/config. Returns the decoded body, or null on any failure.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function fetch(): ?array
+    {
+        $api_key = (string) get_option('bilge_api_key', '');
+        $base = rtrim((string) get_option('bilge_base_url', ''), '/');
+        if ($api_key === '' || $base === '') {
+            return null;
+        }
+
+        $url = $base.'/api/config';
+        $args = [
+            'timeout' => 2,
+            'blocking' => true,
+            'headers' => [
+                'Accept' => 'application/json',
+                'X-Api-Key' => $api_key,
+            ],
+        ];
+
+        /** Same request-args filter as sends, so SSL/proxy customizations apply to config too. */
+        $args = apply_filters('bilge_remote_post_args', $args, [], $url);
+
+        $response = wp_remote_get($url, $args);
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            return null;
+        }
+
+        $decoded = json_decode((string) wp_remote_retrieve_body($response), true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+}

@@ -1,0 +1,156 @@
+<?php
+
+/**
+ * Real User Monitoring beacon injector.
+ *
+ * Prints a small vanilla-JS snippet into the front-end footer that:
+ *   - captures front-end JS errors (window.onerror / unhandledrejection) and reports them to
+ *     /api/ingest as language:js at 100% (errors are rare and high-value), and
+ *   - on a sampled fraction of page views, collects Web Vitals (LCP, FCP, TTFB, CLS, INP) and
+ *     sends one /api/ingest/rum beacon at page hide.
+ *
+ * RUM runs in visitors' browsers, so it is gated on an explicit opt-in (bilge_rum_enabled),
+ * the remote `rum` signal being enabled, and never injected into wp-admin. The beacon uses
+ * keepalive fetch (not sendBeacon) so it can set X-Bilge-Client-Sampled and the server does
+ * not double-sample.
+ */
+
+declare(strict_types=1);
+
+if (! defined('ABSPATH')) {
+    exit;
+}
+
+final class Bilge_Rum
+{
+    public static function enabled(): bool
+    {
+        if (! Bilge_Consent::granted()) {
+            return false;
+        }
+        if (! get_option('bilge_enabled', false) || ! get_option('bilge_rum_enabled', false)) {
+            return false;
+        }
+        if (is_admin()) {
+            return false;
+        }
+        $api_key = (string) get_option('bilge_api_key', '');
+        $base = (string) get_option('bilge_base_url', '');
+        if ($api_key === '' || $base === '') {
+            return false;
+        }
+
+        return Bilge_Config::is_enabled('rum');
+    }
+
+    /**
+     * Config the browser snippet needs. JS errors ride at 100%; Web Vitals at the rum sample rate.
+     *
+     * @return array<string, mixed>
+     */
+    public static function script_config(): array
+    {
+        $base = rtrim((string) get_option('bilge_base_url', ''), '/');
+
+        return [
+            'errors' => $base.'/api/ingest',
+            'rum' => $base.'/api/ingest/rum',
+            'key' => (string) get_option('bilge_api_key', ''),
+            'env' => (string) get_option('bilge_environment', 'production'),
+            'rate' => Bilge_Config::sample_rate('rum'),
+            // Client suppression keys for ignored errors; the browser drops matching JS errors before
+            // sending. Computed with the same recipe as the server (WebCrypto SHA-256 in the snippet).
+            'suppress' => array_keys(Bilge_Config::suppressed_keys()),
+        ];
+    }
+
+    public static function render(): void
+    {
+        try {
+            if (! self::enabled()) {
+                return;
+            }
+
+            $config = wp_json_encode(self::script_config());
+            echo '<script>(function(){var c='.$config.';'.self::snippet().'})();</script>';
+        } catch (Throwable $e) {
+            // Never let beacon injection break the page footer.
+            error_log('Bilge: RUM render failed: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * The browser collector. Kept dependency-free and defensive: any failure is swallowed so the
+     * page is never affected by telemetry.
+     */
+    private static function snippet(): string
+    {
+        return <<<'JS'
+if(!c||!c.key){return;}
+var sampled=Math.random()<(c.rate||0),sent=0;
+function post(url,body,sampledHeader){
+  try{
+    var h={'Content-Type':'application/json'};
+    if(sampledHeader){h['X-Bilge-Client-Sampled']='1';}
+    fetch(url,{method:'POST',headers:h,body:JSON.stringify(body),keepalive:true,credentials:'omit'});
+  }catch(e){}
+}
+function normSupp(s){
+  s=String(s==null?'':s).trim().toLowerCase();
+  s=s.replace(/[ \t\n\r\f\v]+/g,' ');
+  s=s.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,'<id>');
+  s=s.replace(/[0-9a-z]{12,}/g,'<id>');
+  s=s.replace(/\b0x[0-9a-f]+\b/g,'<n>');
+  s=s.replace(/\d+/g,'<n>');
+  return Array.from(s.trim()).slice(0,200).join('');
+}
+// Compute the shared client suppression key (lkt_supp_v1), then call cb(key) — or cb(null) when
+// WebCrypto is unavailable (insecure context), in which case we fail open and still report.
+function suppKey(cls,msg,cb){
+  try{
+    var data='lkt_supp_v1|'+String(cls==null?'':cls).trim().toLowerCase()+'|'+normSupp(msg);
+    if(typeof crypto==='undefined'||!crypto.subtle||typeof TextEncoder==='undefined'){cb(null);return;}
+    crypto.subtle.digest('SHA-256',new TextEncoder().encode(data)).then(function(buf){
+      var b=new Uint8Array(buf),hex='';
+      for(var i=0;i<b.length;i++){hex+=('0'+b[i].toString(16)).slice(-2);}
+      cb(hex.slice(0,32));
+    }).catch(function(){cb(null);});
+  }catch(e){cb(null);}
+}
+function reportError(msg,src,stack){
+  if(sent>=10){return;}
+  var body={api_key:c.key,message:String(msg||'Script error').slice(0,2000),exception_class:'JavaScriptError',
+    level:'error',language:'js',environment:c.env,url:location.href,file:src||location.href,
+    stack_trace:String(stack||'').slice(0,20000)};
+  var supp=c.suppress;
+  if(supp&&supp.length){
+    suppKey(body.exception_class,body.message,function(k){
+      if(k&&supp.indexOf(k)>=0){return;}
+      sent++;post(c.errors,body);
+    });
+  }else{
+    sent++;post(c.errors,body);
+  }
+}
+window.addEventListener('error',function(e){reportError(e&&e.message,e&&e.filename,e&&e.error&&e.error.stack);});
+window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;reportError(r&&r.message||r,location.href,r&&r.stack);});
+if(!sampled){return;}
+var vit={lcp:null,fcp:null,cls:0,inp:0},ttfb=null;
+try{var nav=performance.getEntriesByType('navigation')[0];if(nav){ttfb=Math.round(nav.responseStart);}}catch(e){}
+function ob(type,cb){try{var o=new PerformanceObserver(function(l){l.getEntries().forEach(cb);});o.observe({type:type,buffered:true});return o;}catch(e){return null;}}
+ob('largest-contentful-paint',function(en){vit.lcp=Math.round(en.startTime);});
+ob('paint',function(en){if(en.name==='first-contentful-paint'){vit.fcp=Math.round(en.startTime);}});
+ob('layout-shift',function(en){if(!en.hadRecentInput){vit.cls+=en.value;}});
+ob('event',function(en){if(en.duration>vit.inp){vit.inp=Math.round(en.duration);}});
+var flushed=false;
+function flush(){
+  if(flushed){return;}flushed=true;
+  post(c.rum,{api_key:c.key,page_url:location.href,navigation_type:'load',environment:c.env,
+    user_agent:navigator.userAgent,lcp_ms:vit.lcp,fcp_ms:vit.fcp,ttfb_ms:ttfb,inp_ms:vit.inp||null,
+    cls:Math.round(vit.cls*1000)/1000},true);
+}
+addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden'){flush();}});
+addEventListener('pagehide',flush);
+JS;
+    }
+}
