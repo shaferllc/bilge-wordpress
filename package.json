@@ -1,6 +1,6 @@
 {
   "name": "bilge-wordpress",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "description": "WordPress plugin — POST errors to Bilge ingest API"
 }

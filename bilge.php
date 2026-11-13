@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Bilge
  * Description: Send errors, fatals, 404s, performance traces, CPU profiles, PHP logs, cron check-ins, and browser RUM to Bilge.
- * Version: 0.8.0
+ * Version: 0.9.0
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author: Bilge
@@ -17,7 +17,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('BILGE_VERSION', '0.8.0');
+define('BILGE_VERSION', '0.9.0');
 define('BILGE_PLUGIN_FILE', __FILE__);
 define('BILGE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
