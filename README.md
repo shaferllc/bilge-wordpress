@@ -4,7 +4,7 @@ WordPress plugin that reports **uncaught exceptions**, **shutdown fatals** (E_ER
 
 **Free dashboard:** [Create a free Starter account](https://bilge.sh/register) (no credit card) — one project, thousands of events/month. Copy your project API key from Settings and view grouped errors in the web UI.
 
-**Monorepo path:** `packages/bilge-wordpress/`. Optional **git subtree** mirror when `SPLIT_BILGE_WORDPRESS_REPO` is set (see `.github/workflows/package-split.yml`).
+**Monorepo path:** `packages/bilge-wordpress/`. Optional **git subtree** mirror, pushed by hand.
 
 ## Requirements
 
